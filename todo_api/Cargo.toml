@@ -1,0 +1,18 @@
+[package]
+name = "todo_api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+argonautica = "0.2.0"
+axum = "0.8.9"
+diesel = { version = "2.3.10", features = ["mysql", "r2d2"] }
+diesel_migrations = { version = "2.3.2", features = ["mysql"] }
+dotenvy = "0.15.7"
+hmac = "0.12.1"
+jwt = "0.16.0"
+serde = { version = "1.0.228", features = ["derive", "std"] }
+sha2 = "0.10.9"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
