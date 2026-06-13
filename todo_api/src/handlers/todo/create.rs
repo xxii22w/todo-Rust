@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
+use tracing::info;
 
 use crate::{
     AppState,
@@ -16,9 +17,12 @@ pub async fn handler(
     Extension(user): Extension<ContextUser>,
     Json(request): Json<CreateTodoRequest>,
 ) -> impl IntoResponse {
-    println!("Create TODO request: {request:?}");
+    info!("Create TODO request: {request:?}");
 
-    match todo_service.create(user.user_id as i32, request.into()) {
+    match todo_service
+        .create(user.user_id as i32, request.into())
+        .await
+    {
         Ok(result) => (
             StatusCode::OK,
             Json(JsonResponse::Success(Todo::from(result))),

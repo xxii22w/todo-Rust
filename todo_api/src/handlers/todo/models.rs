@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-use crate::db::models::{CreateTodo, TodoModel, UpdateTodo, UpdateTodoPartial};
+use crate::db::models::{TodoModel, UpdateTodo, UpdateTodoPartial};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct Todo {
     pub id: u64,
     pub title: String,

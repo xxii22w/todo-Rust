@@ -1,0 +1,13 @@
+-- 1. 先创建 users 表
+CREATE TABLE users (
+    id INTEGER AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(255) NOT NULL UNIQUE,
+    password TEXT NOT NULL,
+    created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated DATETIME NOT NULL ON UPDATE CURRENT_TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. 为 todos 表添加 user_id 字段，并显式命名外键约束（方便回滚时删除）
+ALTER TABLE todos 
+ADD COLUMN user_id INTEGER NOT NULL,
+ADD CONSTRAINT fk_todos_user_id FOREIGN KEY (user_id) REFERENCES users(id);

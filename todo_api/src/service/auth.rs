@@ -4,19 +4,13 @@ use std::{
 };
 
 use argonautica::Verifier;
-use diesel::{
-    Connection, ExpressionMethods, MysqlConnection, QueryDsl, RunQueryDsl, SelectableHelper,
-    r2d2::{self, ConnectionManager, Pool},
-};
+
 use dotenvy::dotenv;
+use sqlx::MySqlPool;
 use thiserror::Error;
 
 use crate::{
-    db::{
-        DbConnectionPoolError,
-        models::{CreateUser, User},
-        schema,
-    },
+    db::{DbConnectionPoolError, models::User},
     handlers::auth::models::{LoginRequest, RegistrationRequest},
     service,
 };
@@ -25,10 +19,6 @@ use crate::{
 pub enum Error {
     #[error("Connection pool init error: {0}")]
     ConnectionPool(#[from] DbConnectionPoolError),
-    #[error("R2D2 DB pool build error: {0}")]
-    R2D2(#[from] r2d2::PoolError),
-    #[error("DB error: {0}")]
-    Diesel(#[from] diesel::result::Error),
     #[error("Hashing error: {0}")]
     Hashing(argonautica::Error),
     #[error("Failed to get environment variable: {0}")]
@@ -39,17 +29,19 @@ pub enum Error {
     InvalidPassword,
     #[error("JWT service error: {0}")]
     JwtService(#[from] service::jwt::Error),
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 pub struct Service {
     jwt_service: Arc<service::jwt::Service>,
-    conn_pool: Pool<ConnectionManager<MysqlConnection>>,
+    conn_pool: MySqlPool,
 }
 
 impl Service {
     pub fn new(
         jwt_service: Arc<service::jwt::Service>,
-        conn_pool: Pool<ConnectionManager<MysqlConnection>>,
+        conn_pool: MySqlPool,
     ) -> Result<Self, Error> {
         Ok(Self {
             jwt_service,
@@ -57,15 +49,17 @@ impl Service {
         })
     }
 
-    pub fn login(&self, request: LoginRequest) -> Result<String, Error> {
+    pub async fn login(&self, request: LoginRequest) -> Result<String, Error> {
         dotenv().ok();
 
         let hashing_secret_key = env::var("HASHING_SECRET_KEY")?;
-        let mut conn = self.conn_pool.get()?;
-        let found_user: User = schema::users::table
-            .filter(schema::users::username.eq(request.username))
-            .select(User::as_select())
-            .first(&mut conn)?;
+
+        let found_user_sql =
+            "SELECT id, username, password, created, updated FROM users WHERE username = ?";
+        let found_user = sqlx::query_as::<_, User>(found_user_sql)
+            .bind(&request.username)
+            .fetch_one(&self.conn_pool)
+            .await?;
 
         let mut password_hash_verifier = Verifier::default();
         let pass_valid = password_hash_verifier
@@ -83,7 +77,7 @@ impl Service {
         Ok(token)
     }
 
-    pub fn register(&self, request: RegistrationRequest) -> Result<(), Error> {
+    pub async fn register(&self, request: RegistrationRequest) -> Result<(), Error> {
         dotenv().ok();
 
         let hashing_secret_key = env::var("HASHING_SECRET_KEY")?;
@@ -94,26 +88,26 @@ impl Service {
             .hash()
             .map_err(|error| Error::Hashing(error))?;
 
-        let mut conn = self.conn_pool.get()?;
-        conn.transaction(|conn| {
-            let matching_username_count: i64 = schema::users::table
-                .filter(schema::users::username.eq(request.username.as_str()))
-                .count()
-                .get_result(conn)?;
+        let mut tx = self.conn_pool.begin().await?;
 
-            if matching_username_count > 0 {
-                return Err(Error::UsernameAlreadyExists(request.username));
-            }
+        let count_sql = "SELECT COUNT(*) FROM users WHERE username = ?";
+        let matching_user_count: i64 = sqlx::query_scalar(count_sql)
+            .bind(&request.username)
+            .fetch_one(&mut *tx)
+            .await?;
 
-            diesel::insert_into(schema::users::table)
-                .values(&CreateUser {
-                    username: request.username,
-                    password: password_hash,
-                })
-                .execute(conn)?;
+        if matching_user_count > 0 {
+            return Err(Error::UsernameAlreadyExists(request.username));
+        }
 
-            Ok::<(), Error>(())
-        })?;
+        let insert_sql = "INSERT INTO users (username, password) VALUES (?,?)";
+        sqlx::query(insert_sql)
+            .bind(&request.username)
+            .bind(&password_hash)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }

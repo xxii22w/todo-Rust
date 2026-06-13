@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 
 use crate::{
@@ -8,14 +6,22 @@ use crate::{
         models::{ErrorResponse, JsonResponse},
         todo::models::Todo,
     },
-    service::{jwt::ContextUser, todo::Service},
+    service::jwt::ContextUser,
 };
 
+#[utoipa::path(
+    get,
+    path = "/todo",
+    responses(
+        (status = 200, description = "Successfully listed TODOs", body = JsonResponse<Vec<Todo>>, example = json!({"success": [{"id": 3,"title": "Some title 3","description": "Some description 3"}]})),
+        (status = 401, description = "Unauthorized"),
+    ),
+)]
 pub async fn handler(
     State(AppState { todo_service, .. }): State<AppState>,
     Extension(user): Extension<ContextUser>,
 ) -> impl IntoResponse {
-    match todo_service.list(user.user_id as i32) {
+    match todo_service.list(user.user_id as i32).await {
         Ok(result) => (
             StatusCode::OK,
             Json(JsonResponse::Success(

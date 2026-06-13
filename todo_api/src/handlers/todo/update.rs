@@ -6,6 +6,7 @@ use axum::{
     http::{StatusCode, request},
     response::IntoResponse,
 };
+use tracing::info;
 
 use crate::{
     AppState,
@@ -22,14 +23,17 @@ pub async fn handler(
     Path(id): Path<u64>,
     Json(request): Json<UpdateTodoRequest>,
 ) -> impl IntoResponse {
-    println!("Update TODO request: {request:?}");
+    info!("Update TODO request: {request:?}");
 
-    match todo_service.update(user.user_id as i32, id as i32, request.into()) {
+    match todo_service
+        .update(user.user_id as i32, id as i32, request.into())
+        .await
+    {
         Ok(_) => (StatusCode::OK, Json(JsonResponse::Success(true))),
         Err(error) => {
             if matches!(
                 error,
-                service::todo::Error::Diesel(diesel::result::Error::NotFound)
+                service::todo::Error::Database(sqlx::Error::RowNotFound)
             ) {
                 return (
                     StatusCode::NOT_FOUND,

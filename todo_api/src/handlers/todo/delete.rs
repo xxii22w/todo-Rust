@@ -6,6 +6,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use tracing::info;
 
 use crate::{
     AppState,
@@ -18,14 +19,14 @@ pub async fn handler(
     Extension(user): Extension<ContextUser>,
     Path(id): Path<u64>,
 ) -> impl IntoResponse {
-    println!("Delete TODO handler request id: {id}");
+    info!("Delete TODO handler request id: {id}");
 
-    match todo_service.delete(user.user_id as i32, id as i32) {
+    match todo_service.delete(user.user_id as i32, id as i32).await {
         Ok(_) => (StatusCode::OK, Json(JsonResponse::Success(true))),
         Err(error) => {
             if matches!(
                 error,
-                service::todo::Error::Diesel(diesel::result::Error::NotFound)
+                service::todo::Error::Database(sqlx::Error::RowNotFound)
             ) {
                 return (
                     StatusCode::NOT_FOUND,

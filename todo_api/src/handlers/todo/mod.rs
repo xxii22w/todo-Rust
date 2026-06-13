@@ -5,3 +5,4 @@ pub mod lists;
 pub mod models;
 pub mod partial_update;
 pub mod update;
+pub use lists::__path_handler as __path_list;

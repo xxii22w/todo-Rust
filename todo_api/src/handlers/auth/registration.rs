@@ -4,6 +4,7 @@ use axum::{
     http::{StatusCode, request},
     response::IntoResponse,
 };
+use tracing::info;
 
 use crate::{
     AppState,
@@ -17,9 +18,9 @@ pub async fn handler(
     State(AppState { auth_service, .. }): State<AppState>,
     Json(request): Json<RegistrationRequest>,
 ) -> impl IntoResponse {
-    println!("Registration Request: {request:?}");
+    info!("Registration Request: {request:?}");
 
-    match auth_service.register(request) {
+    match auth_service.register(request).await {
         Ok(_) => (StatusCode::OK, Json(JsonResponse::Success(true))),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
