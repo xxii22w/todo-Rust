@@ -6,6 +6,12 @@ rust base and todo app
 
 => rust-Base
 
-## rust todo rest-api
+## todo_api
 
-=> todo-api
+### Features Implemented
+
+- base todo-list CURD
+- Fixed-window rate limit
+- tracing logs
+- openapi doc
+- promtheus Metrics
