@@ -1,7 +1,16 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use core::fmt;
+use std::arch::x86_64::_mm256_mask_cmp_ps_mask;
+use std::cell::{Cell, RefCell};
+use std::error::Error;
+use std::ffi::c_char;
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::rc::Rc;
+use std::sync::mpsc;
 use std::thread::sleep;
 use std::{char::ToUppercase, string};
 
+use anyhow::{Context, Result, bail};
 use hello::Frog;
 use hello::spanish;
 #[warn(unused_imports)]
@@ -541,8 +550,10 @@ fn logging() {
 }
 
 use crossbeam::channel;
+use log::set_max_level;
 use std::thread;
 use std::time::Duration;
+use thiserror::Error;
 
 fn sleep_ms(ms: u64) {
     thread::sleep(Duration::from_millis(ms));
@@ -801,6 +812,569 @@ fn io_test() -> std::io::Result<()> {
     Ok(())
 }
 
+struct Droppable {
+    name: &'static str,
+}
+
+impl Drop for Droppable {
+    fn drop(&mut self) {
+        println!("Dropping {}", self.name);
+    }
+}
+
+// Box<T> 实现了Deref<Target = T> 这意味着直接从T在Box<T>上调用函数
+#[derive(Debug)]
+enum List<T> {
+    Element(T, Box<List<T>>),
+    Nil,
+}
+
+// 32 bytes
+// String -> ptr (8)
+//        -> cap (8)
+//        -> len (8)
+// i8 (1)
+// 字节对齐 32
+struct Dog1 {
+    name: String,
+    age: i8,
+}
+
+struct Cat1 {
+    lives: i8,
+}
+
+trait Pet1 {
+    fn talk(&self) -> String;
+}
+
+impl Pet1 for Dog1 {
+    fn talk(&self) -> String {
+        format!("Woof, my name is {}!", self.name)
+    }
+}
+
+impl Pet1 for Cat1 {
+    fn talk(&self) -> String {
+        String::from("Miau!")
+    }
+}
+
+fn memory_manager() {
+    // Clone属性通常对值深拷贝
+    // Copy属性可以将自定义类型添加到复制语义，或者用P1.clone()显示复制数据
+    // Drop属性可以制定超出作用域时要运行的代码 类似 c++析构函数 打印dcba
+    let a = Droppable { name: "a" };
+    {
+        let b = Droppable { name: "b" };
+        {
+            let c = Droppable { name: "c" };
+            let d = Droppable { name: "d" };
+        }
+        println!("Exiting next block");
+    }
+    drop(a);
+    println!("Existinig main");
+
+    // Box是一个指向堆数据的私有指针 c++的unique_ptr
+    //  编译时无法确定大小时使用
+    //  需要转移大量数据的所有权，用指针
+    let five = Box::new(55);
+    println!("five {}", *five);
+
+    let list: List<i32> = List::Element(1, Box::new(List::Element(2, Box::new(List::Nil))));
+    println!("{list:?}");
+
+    // Rc是一个引用计数指针 C++的shared_ptr
+    //  Rc::string_count 检查引用次数
+    //  Rc::downgrade 提供一个弱引用计数对象
+    let a = Rc::new(10);
+    let b = Rc::clone(&a);
+    println!("a: {}", *a);
+    println!("b: {}", *b);
+
+    // 拥有特性的对象
+    let pets: Vec<Box<dyn Pet1>> = vec![
+        Box::new(Cat1 { lives: 9 }),
+        Box::new(Dog1 {
+            name: String::from("Fibo"),
+            age: 5,
+        }),
+    ];
+    for pet in pets {
+        println!("Hello, who are you? {}", pet.talk());
+    }
+    println!(
+        "{} {}",
+        std::mem::size_of::<Dog1>(),
+        std::mem::size_of::<Cat1>()
+    );
+    println!(
+        "{} {}",
+        std::mem::size_of::<&Dog1>(),
+        std::mem::size_of::<&Cat1>()
+    );
+    // 数据指针 + 虚函数表指针 （16）
+    println!("{}", std::mem::size_of::<&dyn Pet1>());
+    println!("{}", std::mem::size_of::<Box<dyn Pet1>>());
+}
+
+#[derive(Debug)]
+struct Point1(i32, i32);
+
+fn add(p1: &Point1, p2: &Point1) -> Point1 {
+    Point1(p1.0 + p2.0, p1.1 + p2.1)
+}
+
+fn borrowing() {
+    let p1 = Point1(3, 4);
+    let p2 = Point1(10, 20);
+    let p3 = add(&p1, &p2);
+    println!("{p1:?} + {p2:?} = {p3:?}");
+
+    // Cell 封装了一个值，并且只允许使用对 Cell 共享引用来获取或设置该值。
+    // 但是，它不允许对内部值进行任何引用。由于不存在引用，因此不会违反借用规则。
+    // 在某些不可变的对象内部，需要修改某一个小数据”的情况。为了打破这个死板的限制，Rust 提供了 Cell 和 RefCell 这两个“作弊通道”
+    // Cell 适合实现了Copy特征的基础类型
+    // RefCell 适合复杂类型的内部修改 未实现Copy的
+    let cell = Cell::new(5);
+    cell.set(123);
+    println!("{}", cell.get());
+
+    let cell1 = RefCell::new(6);
+    {
+        let mut cell_ref = cell1.borrow_mut();
+        *cell_ref = 123;
+    }
+    println!("{cell:?}");
+}
+
+fn identity(x: &i32) -> &i32 {
+    x
+}
+
+fn Pick<'a>(c: bool, a: &'a i32, b: &'a i32) -> &'a i32 {
+    if c { a } else { b }
+}
+
+fn find_nearest<'a>(points: &'a [Point1], query: &Point1) -> &'a Point1 {
+    fn cab_distance(p1: &Point1, p2: &Point1) -> i32 {
+        (p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()
+    }
+
+    let mut nearest = None;
+    for p in points {
+        if let Some((_, nearest_dist)) = nearest {
+            let dist = cab_distance(p, query);
+            if dist < nearest_dist {
+                nearest = Some((p, dist));
+            }
+        } else {
+            nearest = Some((p, cab_distance(p, query)));
+        };
+    }
+
+    nearest.map(|(p, _)| p).unwrap()
+    // query // What happens if we do this instead?
+}
+
+#[derive(Debug)]
+enum HighlightColor {
+    Pink,
+    Yellow,
+}
+
+#[derive(Debug)]
+// & <'document> str 相当于c++的std::string_view
+struct Highlight<'document> {
+    // &'a 字符串切片
+    slice: &'document str,
+    color: HighlightColor,
+}
+
+fn Lifetimes() {
+    let mut x = 123;
+    let out = identity(&x);
+
+    println!("{}", out);
+
+    let mut a = 5;
+    let mut b = 10;
+    let r = Pick(true, &a, &b);
+
+    println!("{}", r);
+
+    let points = &[Point1(1, 0), Point1(1, 0), Point1(-1, 0), Point1(0, -1)];
+    let query = Point1(0, 2);
+    let nearest = find_nearest(points, &query);
+
+    // `query` isn't borrowed at this point.
+    drop(query);
+
+    dbg!(nearest);
+
+    // 如果数据类型存储借用的数据，则必须为其添加生命周期注释
+    let doc = String::from("The quick brown fox jumps over the lazy dog.");
+    let noun = Highlight {
+        slice: &doc[16..19],
+        color: HighlightColor::Yellow,
+    };
+    let verb = Highlight {
+        slice: &doc[20..25],
+        color: HighlightColor::Pink,
+    };
+    // drop(doc);
+    dbg!(noun);
+    dbg!(verb);
+}
+
+struct SliceIter<'s> {
+    slice: &'s [i32],
+    i: usize,
+}
+
+impl<'s> Iterator for SliceIter<'s> {
+    type Item = &'s i32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.i == self.slice.len() {
+            None
+        } else {
+            let next = &self.slice[self.i];
+            self.i += 1;
+            Some(next)
+        }
+    }
+}
+
+struct Grid {
+    x_coords: Vec<u32>,
+    y_coords: Vec<u32>,
+}
+
+struct GridIter {
+    grid: Grid,
+    i: usize,
+    j: usize,
+}
+
+impl IntoIterator for Grid {
+    type Item = (u32, u32);
+    type IntoIter = GridIter;
+    fn into_iter(self) -> GridIter {
+        GridIter {
+            grid: self,
+            i: 0,
+            j: 0,
+        }
+    }
+}
+
+impl Iterator for GridIter {
+    type Item = (u32, u32);
+
+    fn next(&mut self) -> Option<(u32, u32)> {
+        if self.i >= self.grid.x_coords.len() {
+            self.i = 0;
+            self.j += 1;
+            if self.j >= self.grid.y_coords.len() {
+                return None;
+            }
+        }
+        let res = Some((self.grid.x_coords[self.i], self.grid.y_coords[self.j]));
+        self.i += 1;
+        res
+    }
+}
+
+fn iterator_ex() {
+    let array = [2, 4, 6, 8];
+    let mut i = 0;
+    while i < array.len() {
+        let elem = array[i];
+        i += 1;
+        println!("{}", elem);
+    }
+
+    // &取指针地址 iter迭代器
+    let slice = &[2, 4, 6, 8];
+    let iter = SliceIter { slice, i: 0 };
+    for elem in iter {
+        dbg!(elem);
+    }
+
+    // Iterator trait提供了70多个辅助方法，用于构建自定义迭代器
+    let result: i32 = (1..=10).filter(|x| x % 2 == 0).map(|x| x * x).sum();
+
+    println!(
+        "The sum of squares of even numbers from 1 to 10 is {}",
+        result
+    );
+
+    let primes = vec![2, 3, 5, 7];
+    let prime_squares = primes.into_iter().map(|p| p * p).collect::<Vec<_>>();
+    println!("prime_squares: {prime_squares:?}");
+
+    let grid = Grid {
+        x_coords: vec![3, 55, 7, 9],
+        y_coords: vec![10, 20, 30, 40],
+    };
+    for (x, y) in grid {
+        println!("point = {x},{y}");
+    }
+}
+
+#[derive(Debug)]
+enum ReadUsernameError {
+    ioError(io::Error),
+    EmptyUsername(String),
+}
+
+impl Error for ReadUsernameError {}
+
+impl fmt::Display for ReadUsernameError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::ioError(e) => write!(f, "I/O error: {e}"),
+            Self::EmptyUsername(path) => write!(f, "Found no username in {path}"),
+        }
+    }
+}
+
+impl From<io::Error> for ReadUsernameError {
+    fn from(err: io::Error) -> Self {
+        Self::ioError(err)
+    }
+}
+
+fn read_username(path: &str) -> Result<String, ReadUsernameError> {
+    let mut username = String::with_capacity(100);
+    fs::File::open(path)?.read_to_string(&mut username)?;
+    if username.is_empty() {
+        return Err(ReadUsernameError::EmptyUsername(String::from(path)));
+    }
+    Ok(username)
+}
+
+// 动态错误类型 std::error::Error trait可以轻松创建一个可以包含任何错误的trait对象
+fn read_count(path: &str) -> Result<i32, Box<dyn Error>> {
+    let mut count_str = String::new();
+    fs::File::open(path)?.read_to_string(&mut count_str)?;
+    let count: i32 = count_str.parse()?;
+    Ok(count)
+}
+
+// thiserror
+#[derive(Debug, Error)]
+enum readUsernameError {
+    #[error("I/O error: {0}")]
+    IoError(#[from] io::Error),
+    #[error("Found no username in {0}")]
+    EmptyUsername(String),
+}
+
+fn Read_username(path: &str) -> Result<String, readUsernameError> {
+    let mut username = String::with_capacity(100);
+    fs::File::open(path)?.read_to_string(&mut username)?;
+    if username.is_empty() {
+        return Err(readUsernameError::EmptyUsername(String::from(path)));
+    }
+    Ok(username)
+}
+
+// anyhow
+// 提供了一个丰富的错误类型，支持携带额外的上下文信息，用于提供程序在发生错误之前所执行操作的语义跟踪
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("Found no username in {0}")]
+struct EmptyUsernameError(String);
+
+fn read_username2(path: &str) -> Result<String> {
+    let mut username = String::with_capacity(100);
+    fs::File::open(path)
+        .with_context(|| format!("Failed to open {path}"))?
+        .read_to_string(&mut username)
+        .context("Failed to read")?;
+    if username.is_empty() {
+        bail!(EmptyUsernameError(path.to_string()));
+    }
+    Ok(username)
+}
+
+fn error_handle() {
+    // panic
+    // 1.针对无法恢复且意料之外的错误而触发的
+    // 2. panic会展开堆栈，丢弃值，就像函数返回一样
+    // 3.如果不不能接受崩溃，请使用不会引发恐慌的API
+
+    // rust最主要错误处理机制是Result枚举
+    let file: Result<File, std::io::Error> = File::open("diary.txt");
+    match file {
+        Ok(mut file) => {
+            let mut contents = String::new();
+            if let Ok(bytes) = file.read_to_string(&mut contents) {
+                println!("Dear diary: {contents} ({bytes} bytes)");
+            } else {
+                println!("Could not read file content");
+            }
+        }
+        Err(err) => {
+            println!("The diary could not be opened: {err}");
+        }
+    }
+
+    // FROM::from 调用表示我们尝试将错误类型转换为函数返回的类型
+    let username = read_username("config.dat");
+    println!("username or erroro: {username:?}");
+
+    fs::write("count.dat", "1i3").unwrap();
+    match read_count("count.dat") {
+        Ok(count) => println!("Count: {count}"),
+        Err(err) => println!("Error: {err}"),
+    }
+
+    match read_username("config.dat") {
+        Ok(username) => println!("Username: {username}"),
+        Err(err) => println!("Error: {err}"),
+    }
+
+    match read_username2("config.dat") {
+        Ok(username) => println!("Username: {username}"),
+        Err(err) => println!("Error: {err:?}"),
+    }
+}
+
+static mut COUNTER: u32 = 0;
+
+fn add_to_counter(inc: u32) {
+    unsafe {
+        COUNTER += inc;
+    }
+}
+
+#[repr(C)]
+union MyUnion {
+    i: u8,
+    b: bool,
+}
+
+// 如果函数需要特定的前提条件以避免未定义行为，可以标记为unsafe
+unsafe fn swap(a: *mut u8, b: *mut u8) {
+    unsafe {
+        let temp = *a;
+        *a = *b;
+        *b = temp;
+    }
+}
+
+// 使用unsafe extern声明外部函数给rust内部访问，在extern中必须标记safe或unsafe
+unsafe extern "C" {
+    safe fn abs(input: i32) -> i32;
+
+    unsafe fn strlen(s: *const c_char) -> usize;
+}
+
+fn unsafe_rust() {
+    // 创建指针是安全的，但解引用需要使用unsafe
+    let mut x = 10;
+    let p1: *mut i32 = &raw mut x;
+    let p2 = p1 as *const i32;
+    unsafe {
+        dbg!(*p1);
+        *p1 = 6;
+        dbg!(*p2);
+    }
+
+    // 读取不可变静态变量是安全的，可变量静态变量的读写是不安全的
+    // 要合理使用可变静态变量，需要在不借助编译器帮助的情况下对并发性进行推理
+    add_to_counter(42);
+    unsafe {
+        dbg!(COUNTER);
+    }
+
+    let u = MyUnion { i: 42 };
+    println!("int: {}", unsafe { u.i });
+    println!("bool: {}", unsafe { u.b });
+
+    let mut a = 42;
+    let mut b = 66;
+    unsafe {
+        swap(&mut a, &mut b);
+    }
+
+    println!("a = {},b = {}", a, b);
+
+    println!("Absolute value of -3 according to C: {}", abs(-3));
+    unsafe {
+        println!("String length: {}", strlen(c"String".as_ptr()));
+    }
+}
+
+fn concurrency() {
+    let a = thread::spawn(|| {
+        for i in 0..10 {
+            println!("COunt in thread: {i}!");
+            thread::sleep(Duration::from_millis(5));
+        }
+    });
+
+    for i in 0..5 {
+        println!("Main thread: {i}");
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    // 从环境中借用资源 需要用作用域线程2
+    let s = String::from("Hello");
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            dbg!(s.len());
+        });
+    });
+
+    // sender receivers mpsc代表多生产者单消费者
+    let (tx, rx) = mpsc::channel();
+    tx.send(10).unwrap();
+    tx.send(20).unwrap();
+
+    println!("Received: {:?}", rx.recv());
+    println!("Received: {:?}", rx.recv());
+
+    let tx2 = tx.clone();
+    tx2.send(30).unwrap();
+    println!("Received: {:?}", rx.recv());
+
+    // 无界channel
+    let (tx3, rx2) = mpsc::channel();
+    thread::spawn(move || {
+        let thread_id = thread::current().id();
+        for i in 0..10 {
+            tx3.send(format!("Message {i}")).unwrap();
+            println!("{thread_id:?}: send Message {i}");
+        }
+        println!("{thread_id:?}: done");
+    });
+
+    for msg in rx2 {
+        println!("Main: got {msg}");
+    }
+
+    // 有界channel 满了会阻塞
+    let (tx4, rx3) = mpsc::sync_channel(3);
+
+    thread::spawn(move || {
+        let thread_id = thread::current().id();
+        for i in 0..10 {
+            tx4.send(format!("bounded channel Message {i}")).unwrap();
+            println!("{thread_id:?}: bounded channel sent Message {i}");
+        }
+        println!("{thread_id:?}: bounded channel done");
+    });
+    thread::sleep(Duration::from_millis(100));
+
+    for msg in rx3 {
+        println!("Main: bounded channel got {msg}");
+    }
+}
+
 fn main() {
     // greet_world();
     // test_fib();
@@ -822,5 +1396,12 @@ fn main() {
     // pattern_matching();
     // Generics();
     // operator();
-    io_test();
+    // io_test();
+    // memory_manager();
+    // borrowing();
+    // Lifetimes();
+    // iterator_ex();
+    // error_handle();
+    // unsafe_rust();
+    concurrency();
 }
