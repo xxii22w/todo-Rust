@@ -3,6 +3,7 @@ use std::arch::x86_64::_mm256_mask_cmp_ps_mask;
 use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::ffi::c_char;
+use std::fmt::format;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::rc::Rc;
